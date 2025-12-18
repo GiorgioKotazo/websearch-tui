@@ -12,8 +12,14 @@ use crate::extract_clean_md::extract_clean_markdown;
 pub enum AppMessage {
     SearchComplete(Vec<SearchResult>),
     SearchError(String),
-    NvimComplete,
-    NvimError(String),
+}
+
+/// Request to open a page in neovim
+#[derive(Debug, Clone)]
+pub struct NvimRequest {
+    pub url: String,
+    pub _title: String,  // Kept for potential future use
+    pub filepath: PathBuf,
 }
 
 /// Application state
@@ -158,8 +164,8 @@ impl App {
         self.selected_items.clear();
     }
 
-    /// Prepare data for opening in neovim (returns data needed for background task)
-    pub fn prepare_neovim_open(&self) -> Option<(String, String, PathBuf)> {
+    /// Prepare data for opening in neovim (returns data needed for opening)
+    pub fn prepare_neovim_open(&self) -> Option<NvimRequest> {
         if self.selected_index >= self.results.len() {
             return None;
         }
@@ -168,7 +174,11 @@ impl App {
         let filename = create_safe_filename(&result.url);
         let filepath = self.active_tabs_dir.join(&filename);
 
-        Some((result.url.clone(), result.title.clone(), filepath))
+        Some(NvimRequest {
+            url: result.url.clone(),
+            _title: result.title.clone(),
+            filepath,
+        })
     }
 
     /// Go back to search input, keeping results
@@ -239,10 +249,10 @@ fn create_safe_filename(url: &str) -> String {
     }
 }
 
-/// Async function to open in neovim (runs in background task)
-pub async fn open_in_neovim_async(url: &str, _title: &str, filepath: &PathBuf) -> Result<()> {
+/// Open page in neovim (blocking operation, terminal modes already handled by caller)
+pub async fn open_in_neovim_blocking(request: &NvimRequest) -> Result<()> {
     // Check if file already exists
-    if !filepath.exists() {
+    if !request.filepath.exists() {
         // Need to download and extract
         
         // Download HTML
@@ -252,7 +262,7 @@ pub async fn open_in_neovim_async(url: &str, _title: &str, filepath: &PathBuf) -
             .build()?;
         
         let html = client
-            .get(url)
+            .get(&request.url)
             .send()
             .await
             .context("Failed to download page")?
@@ -261,27 +271,19 @@ pub async fn open_in_neovim_async(url: &str, _title: &str, filepath: &PathBuf) -
             .context("Failed to read page content")?;
 
         // Extract and convert to markdown
-        let extracted_content = extract_clean_markdown(&html, url)
+        let extracted_content = extract_clean_markdown(&html, &request.url)
             .context("Failed to extract content from page")?;
         
         // Save to file
-        fs::write(filepath, extracted_content.to_formatted_markdown())
+        fs::write(&request.filepath, extracted_content.to_formatted_markdown())
             .context("Failed to save markdown file")?;
     }
 
-    // Open in neovim
-    // We need to temporarily disable raw mode to let neovim take control
-    crossterm::terminal::disable_raw_mode()
-        .context("Failed to disable raw mode")?;
-    
+    // Open in neovim (blocking - terminal is already in normal mode)
     let status = Command::new("nvim")
-        .arg(filepath)
+        .arg(&request.filepath)
         .status()
         .context("Failed to launch neovim")?;
-    
-    // Re-enable raw mode after neovim exits
-    crossterm::terminal::enable_raw_mode()
-        .context("Failed to re-enable raw mode")?;
     
     if !status.success() {
         anyhow::bail!("Neovim exited with error");

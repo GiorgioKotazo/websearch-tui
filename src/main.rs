@@ -73,12 +73,6 @@ async fn run_app<B: ratatui::backend::Backend>(
                 AppMessage::SearchError(err) => {
                     app.show_error(&format!("Search failed: {}", err));
                 }
-                AppMessage::NvimComplete => {
-                    app.state = AppState::Results;
-                }
-                AppMessage::NvimError(err) => {
-                    app.show_error(&format!("Failed to open in neovim: {}", err));
-                }
             }
         }
 
@@ -159,21 +153,38 @@ async fn run_app<B: ratatui::backend::Backend>(
                                 app.open_in_browser();
                             }
                             KeyCode::Enter => {
-                                // Open in neovim (background task)
-                                let tx_clone = tx.clone();
-                                if let Some((url, title, filepath)) = app.prepare_neovim_open() {
-                                    app.state = AppState::Searching;
+                                // Open in neovim (need to exit TUI temporarily)
+                                if let Some(nvim_request) = app.prepare_neovim_open() {
+                                    // Exit TUI mode
+                                    disable_raw_mode()?;
+                                    execute!(
+                                        io::stdout(),
+                                        LeaveAlternateScreen,
+                                        DisableMouseCapture
+                                    )?;
                                     
-                                    tokio::spawn(async move {
-                                        match crate::app::open_in_neovim_async(&url, &title, &filepath).await {
-                                            Ok(_) => {
-                                                let _ = tx_clone.send(AppMessage::NvimComplete);
-                                            }
-                                            Err(e) => {
-                                                let _ = tx_clone.send(AppMessage::NvimError(e.to_string()));
-                                            }
+                                    // Open in neovim (blocking)
+                                    app.state = AppState::Searching;
+                                    let result = crate::app::open_in_neovim_blocking(&nvim_request).await;
+                                    
+                                    // Re-enter TUI mode
+                                    enable_raw_mode()?;
+                                    execute!(
+                                        io::stdout(),
+                                        EnterAlternateScreen,
+                                        EnableMouseCapture
+                                    )?;
+                                    terminal.clear()?;
+                                    
+                                    // Handle result
+                                    match result {
+                                        Ok(_) => {
+                                            app.state = AppState::Results;
                                         }
-                                    });
+                                        Err(e) => {
+                                            app.show_error(&format!("Failed to open in neovim: {}", e));
+                                        }
+                                    }
                                 }
                             }
                             KeyCode::Esc => {
