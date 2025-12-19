@@ -1,34 +1,33 @@
-use anyhow::{Result, Context};
+//! Application state and core logic
+
+use anyhow::{Context, Result};
 use std::collections::HashSet;
-use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
+use crate::prefetch::PrefetchManager;
 use crate::search::SearchResult;
-use crate::extract_clean_md::extract_clean_markdown;
 
 /// Messages sent from background tasks to the main app
 #[derive(Debug)]
 pub enum AppMessage {
+    /// Search completed with results
     SearchComplete(Vec<SearchResult>),
+    /// Search failed with error
     SearchError(String),
 }
 
-/// Request to open a page in neovim
-#[derive(Debug, Clone)]
-pub struct NvimRequest {
-    pub url: String,
-    pub _title: String,  // Kept for potential future use
-    pub filepath: PathBuf,
-}
-
 /// Application state
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppState {
-    Input,      // User is typing search query
-    Searching,  // Performing search or loading page
-    Results,    // Showing search results
-    Error,      // Showing error message
+    /// User is typing search query
+    Input,
+    /// Performing search
+    Searching,
+    /// Showing search results (prefetching in background)
+    Results,
+    /// Showing error message
+    Error,
 }
 
 /// Main application structure
@@ -37,20 +36,19 @@ pub struct App {
     pub input: String,
     pub results: Vec<SearchResult>,
     pub selected_index: usize,
-    pub scroll_offset: usize,  // For scrolling large result lists
-    pub selected_items: HashSet<usize>, // Indices of items selected with Tab
+    pub scroll_offset: usize,
+    pub selected_items: HashSet<usize>,
     pub error_message: Option<String>,
-    pub active_tabs_dir: PathBuf,
+    pub prefetch_manager: PrefetchManager,
+    /// Status message shown in UI
+    pub status_message: String,
 }
 
 impl App {
-    /// Create new app instance and ensure necessary directories exist
+    /// Create new app instance
     pub fn new() -> Result<Self> {
-        let active_tabs_dir = PathBuf::from("websearch/active_tabs");
-        
-        // Create directories if they don't exist
-        fs::create_dir_all(&active_tabs_dir)
-            .context("Failed to create websearch/active_tabs directory")?;
+        let base_dir = PathBuf::from("websearch");
+        let prefetch_manager = PrefetchManager::new(base_dir)?;
 
         Ok(Self {
             state: AppState::Input,
@@ -60,30 +58,52 @@ impl App {
             scroll_offset: 0,
             selected_items: HashSet::new(),
             error_message: None,
-            active_tabs_dir,
+            prefetch_manager,
+            status_message: String::new(),
         })
     }
 
     /// Start search operation
-    pub fn start_search(&mut self) {
+    pub async fn start_search(&mut self) {
         self.state = AppState::Searching;
         self.results.clear();
         self.selected_index = 0;
         self.scroll_offset = 0;
         self.selected_items.clear();
+        self.status_message = "Searching...".to_string();
+
+        // Clear previous search cache
+        if let Err(e) = self.prefetch_manager.clear_current_search().await {
+            self.status_message = format!("Warning: {}", e);
+        }
     }
 
-    /// Finish search with results
-    pub fn finish_search(&mut self, results: Vec<SearchResult>) {
-        self.results = results;
-        self.state = if self.results.is_empty() {
+    /// Finish search with results and start prefetching
+    pub async fn finish_search(&mut self, results: Vec<SearchResult>) {
+        if results.is_empty() {
             self.error_message = Some("No results found".to_string());
-            AppState::Error
-        } else {
-            AppState::Results
-        };
+            self.state = AppState::Error;
+            return;
+        }
+
+        let count = results.len();
+        self.results = results;
+        self.state = AppState::Results;
         self.selected_index = 0;
         self.scroll_offset = 0;
+        self.status_message = format!("Found {} results. Prefetching...", count);
+
+        // Start prefetching all results in background
+        self.prefetch_manager.prefetch_all(&self.results).await;
+    }
+
+    /// Update prefetch progress
+    pub fn update_prefetch_progress(&mut self, completed: usize, total: usize) {
+        if completed == total {
+            self.status_message = format!("All {} pages ready!", total);
+        } else {
+            self.status_message = format!("Prefetching: {}/{}", completed, total);
+        }
     }
 
     /// Show error message
@@ -92,24 +112,24 @@ impl App {
         self.state = AppState::Error;
     }
 
-    /// Dismiss error and go back to appropriate state
+    /// Dismiss error
     pub fn dismiss_error(&mut self) {
         self.error_message = None;
-        if self.results.is_empty() {
-            self.state = AppState::Input;
+        self.state = if self.results.is_empty() {
+            AppState::Input
         } else {
-            self.state = AppState::Results;
-        }
+            AppState::Results
+        };
     }
 
-    /// Move to next result with proper scrolling
+    /// Move to next result
     pub fn next_result(&mut self) {
         if !self.results.is_empty() {
             self.selected_index = (self.selected_index + 1) % self.results.len();
         }
     }
 
-    /// Move to previous result with proper scrolling
+    /// Move to previous result
     pub fn previous_result(&mut self) {
         if !self.results.is_empty() {
             if self.selected_index == 0 {
@@ -120,11 +140,23 @@ impl App {
         }
     }
 
+    /// Jump to first result
+    pub fn first_result(&mut self) {
+        self.selected_index = 0;
+        self.scroll_offset = 0;
+    }
+
+    /// Jump to last result
+    pub fn last_result(&mut self) {
+        if !self.results.is_empty() {
+            self.selected_index = self.results.len() - 1;
+        }
+    }
+
     /// Get scroll offset for rendering
     pub fn get_scroll_offset(&self, visible_height: usize) -> usize {
-        // Calculate how many items fit on screen (accounting for 4 lines per item + borders)
-        let items_per_screen = visible_height.saturating_sub(2) / 4; // 4 lines per item
-        
+        let items_per_screen = visible_height.saturating_sub(2) / 4;
+
         if self.selected_index >= items_per_screen {
             self.selected_index.saturating_sub(items_per_screen - 1)
         } else {
@@ -141,17 +173,15 @@ impl App {
         }
     }
 
-    /// Open selected or multi-selected items in browser
+    /// Open selected items in browser
     pub fn open_in_browser(&mut self) {
-        let indices_to_open: Vec<usize> = if self.selected_items.is_empty() {
-            // No multi-selection, open current item
+        let indices: Vec<usize> = if self.selected_items.is_empty() {
             vec![self.selected_index]
         } else {
-            // Open all selected items
             self.selected_items.iter().copied().collect()
         };
 
-        for &idx in &indices_to_open {
+        for &idx in &indices {
             if let Some(result) = self.results.get(idx) {
                 if let Err(e) = open_url(&result.url) {
                     self.show_error(&format!("Failed to open URL: {}", e));
@@ -160,31 +190,38 @@ impl App {
             }
         }
 
-        // Clear multi-selection after opening
         self.selected_items.clear();
+        self.status_message = format!("Opened {} URL(s) in browser", indices.len());
     }
 
-    /// Prepare data for opening in neovim (returns data needed for opening)
-    pub fn prepare_neovim_open(&self) -> Option<NvimRequest> {
-        if self.selected_index >= self.results.len() {
-            return None;
-        }
+    /// Open current result in neovim
+    ///
+    /// This activates the page (moves from current_search to active_tabs)
+    /// and returns the filepath to open.
+    pub async fn prepare_neovim_open(&mut self) -> Result<PathBuf> {
+        let result = self
+            .results
+            .get(self.selected_index)
+            .context("No result selected")?;
 
-        let result = &self.results[self.selected_index];
-        let filename = create_safe_filename(&result.url);
-        let filepath = self.active_tabs_dir.join(&filename);
+        // Activate the page (move to active_tabs)
+        let filepath = self
+            .prefetch_manager
+            .activate_page(&result.url)
+            .await
+            .context("Failed to activate page")?;
 
-        Some(NvimRequest {
-            url: result.url.clone(),
-            _title: result.title.clone(),
-            filepath,
-        })
+        Ok(filepath)
     }
 
-    /// Go back to search input, keeping results
+    /// Go back to input mode
     pub fn back_to_input(&mut self) {
         self.state = AppState::Input;
-        // Note: We don't clear results here, they stay visible in the UI
+    }
+
+    /// Get prefetch progress
+    pub async fn get_prefetch_progress(&self) -> (usize, usize) {
+        self.prefetch_manager.get_progress().await
     }
 }
 
@@ -200,7 +237,7 @@ fn open_url(url: &str) -> Result<()> {
             .spawn()
             .context("Failed to open browser")?;
     }
-    
+
     #[cfg(target_os = "linux")]
     {
         Command::new("xdg-open")
@@ -211,7 +248,7 @@ fn open_url(url: &str) -> Result<()> {
             .spawn()
             .context("Failed to open browser")?;
     }
-    
+
     #[cfg(target_os = "windows")]
     {
         Command::new("cmd")
@@ -222,72 +259,20 @@ fn open_url(url: &str) -> Result<()> {
             .spawn()
             .context("Failed to open browser")?;
     }
-    
+
     Ok(())
 }
 
-/// Create safe filename from URL
-fn create_safe_filename(url: &str) -> String {
-    // Use URL as base, but make it filesystem-safe
-    let safe_name: String = url
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    
-    // Truncate if too long and add .md extension
-    let max_len = 200;
-    if safe_name.len() > max_len {
-        format!("{}.md", &safe_name[..max_len])
-    } else {
-        format!("{}.md", safe_name)
-    }
-}
-
-/// Open page in neovim (blocking operation, terminal modes already handled by caller)
-pub async fn open_in_neovim_blocking(request: &NvimRequest) -> Result<()> {
-    // Check if file already exists
-    if !request.filepath.exists() {
-        // Need to download and extract
-        
-        // Download HTML
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-            .build()?;
-        
-        let html = client
-            .get(&request.url)
-            .send()
-            .await
-            .context("Failed to download page")?
-            .text()
-            .await
-            .context("Failed to read page content")?;
-
-        // Extract and convert to markdown
-        let extracted_content = extract_clean_markdown(&html, &request.url)
-            .context("Failed to extract content from page")?;
-        
-        // Save to file
-        fs::write(&request.filepath, extracted_content.to_formatted_markdown())
-            .context("Failed to save markdown file")?;
-    }
-
-    // Open in neovim (blocking - terminal is already in normal mode)
+/// Open file in neovim (blocking)
+pub fn open_in_neovim(filepath: &PathBuf) -> Result<()> {
     let status = Command::new("nvim")
-        .arg(&request.filepath)
+        .arg(filepath)
         .status()
         .context("Failed to launch neovim")?;
-    
+
     if !status.success() {
         anyhow::bail!("Neovim exited with error");
     }
-    
+
     Ok(())
 }

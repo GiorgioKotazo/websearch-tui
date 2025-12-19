@@ -1,6 +1,16 @@
-mod search;
-mod extract_clean_md;
+//! websearch-tui - Lightning-fast terminal web search with Neovim integration
+//!
+//! This TUI application provides:
+//! - Fast web search via Brave Search API
+//! - Background prefetching of all search results
+//! - Clean markdown extraction from web pages
+//! - Seamless Neovim integration for reading
+
 mod app;
+mod extract_clean_md;
+mod globals;
+mod prefetch;
+mod search;
 mod ui;
 
 use anyhow::Result;
@@ -9,21 +19,23 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use ratatui::{
-    backend::CrosstermBackend,
-    Terminal,
-};
-use std::io;
 use dotenvy::dotenv;
+use ratatui::{backend::CrosstermBackend, Terminal};
+use std::io;
+use std::time::Duration;
 use tokio::sync::mpsc;
 
-use app::{App, AppState, AppMessage};
+use app::{App, AppMessage, AppState};
 use ui::draw_ui;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Load environment variables from .env file
+    // Load environment variables
     dotenv().ok();
+
+    // Initialize global resources (HTTP client, Readability)
+    // This happens once at startup, avoiding delays during use
+    globals::init_globals()?;
 
     // Setup terminal
     enable_raw_mode()?;
@@ -63,12 +75,15 @@ async fn run_app<B: ratatui::backend::Backend>(
     tx: mpsc::UnboundedSender<AppMessage>,
     rx: &mut mpsc::UnboundedReceiver<AppMessage>,
 ) -> Result<()> {
+    // Track 'g' key for gg command
+    let mut last_g_press: Option<std::time::Instant> = None;
+
     loop {
-        // Check for messages from background tasks (non-blocking)
+        // Check for messages from background tasks
         while let Ok(msg) = rx.try_recv() {
             match msg {
                 AppMessage::SearchComplete(results) => {
-                    app.finish_search(results);
+                    app.finish_search(results).await;
                 }
                 AppMessage::SearchError(err) => {
                     app.show_error(&format!("Search failed: {}", err));
@@ -76,17 +91,27 @@ async fn run_app<B: ratatui::backend::Backend>(
             }
         }
 
-        // Draw UI
-        terminal.draw(|f| draw_ui(f, app))?;
+        // Get prefetch progress for UI
+        let prefetch_progress = app.get_prefetch_progress().await;
 
-        // Handle input with timeout - only read ONE event per loop iteration
-        if event::poll(std::time::Duration::from_millis(100))? {
+        // Update progress in status
+        if app.state == AppState::Results {
+            let (completed, total) = prefetch_progress;
+            if total > 0 && completed < total {
+                app.update_prefetch_progress(completed, total);
+            }
+        }
+
+        // Draw UI
+        terminal.draw(|f| draw_ui(f, app, prefetch_progress))?;
+
+        // Handle input with timeout
+        if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
-                // Only handle key press events, ignore release and repeat
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
-                
+
                 match app.state {
                     AppState::Input => {
                         match key.code {
@@ -101,27 +126,29 @@ async fn run_app<B: ratatui::backend::Backend>(
                             }
                             KeyCode::Enter => {
                                 if !app.input.trim().is_empty() {
-                                    // Start search
                                     let query = app.input.clone();
-                                    app.start_search();
-                                    
-                                    // Spawn background task for search
+                                    app.start_search().await;
+
+                                    // Spawn search task
                                     let tx_clone = tx.clone();
                                     tokio::spawn(async move {
                                         let api_key = std::env::var("BRAVE_SEARCH_API_KEY")
-                                            .unwrap_or_else(|_| String::new());
-                                        
+                                            .unwrap_or_default();
+
                                         if api_key.is_empty() {
                                             let _ = tx_clone.send(AppMessage::SearchError(
-                                                "BRAVE_SEARCH_API_KEY not set in environment".to_string()
+                                                "BRAVE_SEARCH_API_KEY not set".to_string(),
                                             ));
                                         } else {
                                             match search::brave_search(&api_key, &query).await {
                                                 Ok(results) => {
-                                                    let _ = tx_clone.send(AppMessage::SearchComplete(results));
+                                                    let _ = tx_clone
+                                                        .send(AppMessage::SearchComplete(results));
                                                 }
                                                 Err(e) => {
-                                                    let _ = tx_clone.send(AppMessage::SearchError(e.to_string()));
+                                                    let _ = tx_clone.send(AppMessage::SearchError(
+                                                        e.to_string(),
+                                                    ));
                                                 }
                                             }
                                         }
@@ -141,67 +168,90 @@ async fn run_app<B: ratatui::backend::Backend>(
                             }
                             KeyCode::Char('j') | KeyCode::Down => {
                                 app.next_result();
+                                last_g_press = None;
                             }
                             KeyCode::Char('k') | KeyCode::Up => {
                                 app.previous_result();
+                                last_g_press = None;
+                            }
+                            KeyCode::Char('g') => {
+                                // Check for gg (go to top)
+                                if let Some(last) = last_g_press {
+                                    if last.elapsed() < Duration::from_millis(500) {
+                                        app.first_result();
+                                        last_g_press = None;
+                                    } else {
+                                        last_g_press = Some(std::time::Instant::now());
+                                    }
+                                } else {
+                                    last_g_press = Some(std::time::Instant::now());
+                                }
+                            }
+                            KeyCode::Char('G') => {
+                                // Go to bottom
+                                app.last_result();
+                                last_g_press = None;
                             }
                             KeyCode::Tab => {
                                 app.toggle_selection();
+                                last_g_press = None;
                             }
                             KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                // Open selected results in browser
                                 app.open_in_browser();
+                                last_g_press = None;
                             }
                             KeyCode::Enter => {
-                                // Open in neovim (need to exit TUI temporarily)
-                                if let Some(nvim_request) = app.prepare_neovim_open() {
-                                    // Exit TUI mode
-                                    disable_raw_mode()?;
-                                    execute!(
-                                        io::stdout(),
-                                        LeaveAlternateScreen,
-                                        DisableMouseCapture
-                                    )?;
-                                    
-                                    // Open in neovim (blocking)
-                                    app.state = AppState::Searching;
-                                    let result = crate::app::open_in_neovim_blocking(&nvim_request).await;
-                                    
-                                    // Re-enter TUI mode
-                                    enable_raw_mode()?;
-                                    execute!(
-                                        io::stdout(),
-                                        EnterAlternateScreen,
-                                        EnableMouseCapture
-                                    )?;
-                                    terminal.clear()?;
-                                    
-                                    // Handle result
-                                    match result {
-                                        Ok(_) => {
-                                            app.state = AppState::Results;
+                                last_g_press = None;
+
+                                // Try to open in neovim
+                                match app.prepare_neovim_open().await {
+                                    Ok(filepath) => {
+                                        // Exit TUI mode
+                                        disable_raw_mode()?;
+                                        execute!(
+                                            io::stdout(),
+                                            LeaveAlternateScreen,
+                                            DisableMouseCapture
+                                        )?;
+
+                                        // Open in neovim (blocking)
+                                        let result = app::open_in_neovim(&filepath);
+
+                                        // Re-enter TUI mode
+                                        enable_raw_mode()?;
+                                        execute!(
+                                            io::stdout(),
+                                            EnterAlternateScreen,
+                                            EnableMouseCapture
+                                        )?;
+                                        terminal.clear()?;
+
+                                        if let Err(e) = result {
+                                            app.show_error(&format!("Neovim error: {}", e));
                                         }
-                                        Err(e) => {
-                                            app.show_error(&format!("Failed to open in neovim: {}", e));
-                                        }
+                                    }
+                                    Err(e) => {
+                                        app.status_message = format!("⏳ {}", e);
                                     }
                                 }
                             }
                             KeyCode::Esc => {
-                                // Go back to search input
                                 app.back_to_input();
+                                last_g_press = None;
                             }
-                            _ => {}
+                            _ => {
+                                last_g_press = None;
+                            }
                         }
                     }
                     AppState::Searching => {
-                        // Can't do anything while searching, just wait
-                        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
+                        if key.modifiers.contains(KeyModifiers::CONTROL)
+                            && key.code == KeyCode::Char('q')
+                        {
                             return Ok(());
                         }
                     }
                     AppState::Error => {
-                        // Any key dismisses the error
                         app.dismiss_error();
                     }
                 }

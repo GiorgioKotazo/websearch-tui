@@ -1,6 +1,14 @@
-use reqwest::Client;
-use serde::{Deserialize, Serialize};
+//! Brave Search API integration
+//!
+//! Uses the global HTTP client for connection pooling and reuse.
+
 use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+
+use crate::globals::get_http_client;
+
+/// Maximum number of search results to fetch
+pub const MAX_RESULTS: usize = 10;
 
 /// Search result from Brave API
 #[derive(Debug, Clone)]
@@ -28,15 +36,17 @@ struct BraveResult {
 }
 
 /// Perform search using Brave Search API
+///
+/// Uses the global HTTP client with connection pooling.
+/// Returns up to MAX_RESULTS results.
 pub async fn brave_search(api_key: &str, query: &str) -> Result<Vec<SearchResult>> {
-    let client = Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .context("Failed to create HTTP client")?;
+    let client = get_http_client();
 
+    // Request exactly MAX_RESULTS
     let url = format!(
-        "https://api.search.brave.com/res/v1/web/search?q={}", 
-        urlencoding::encode(query)
+        "https://api.search.brave.com/res/v1/web/search?q={}&count={}",
+        urlencoding::encode(query),
+        MAX_RESULTS
     );
 
     let response = client
@@ -61,6 +71,7 @@ pub async fn brave_search(api_key: &str, query: &str) -> Result<Vec<SearchResult
         .map(|web| {
             web.results
                 .into_iter()
+                .take(MAX_RESULTS) // Ensure we don't exceed limit
                 .map(|r| SearchResult {
                     title: r.title,
                     url: r.url,
@@ -71,4 +82,14 @@ pub async fn brave_search(api_key: &str, query: &str) -> Result<Vec<SearchResult
         .unwrap_or_default();
 
     Ok(results)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_max_results_constant() {
+        assert_eq!(MAX_RESULTS, 10);
+    }
 }
