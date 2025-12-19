@@ -1,83 +1,9 @@
-//! HTML content extraction and Markdown conversion
-//!
-//! Uses Mozilla's Readability algorithm via readability-js for high-quality
-//! content extraction, then converts to clean Markdown.
-//!
-//! Note: Readability uses QuickJS which is not Send/Sync, so we create
-//! a new instance per extraction.
-
 use anyhow::{Context, Result};
-use html_to_markdown_rs::{
-    convert, CodeBlockStyle, ConversionOptions, HeadingStyle, NewlineStyle, PreprocessingOptions,
-    PreprocessingPreset,
+use dom_smoothie::{
+    CandidateSelectMode, Config, ParsePolicy, Readability, TextMode,
 };
-use readability_js::Readability;
 
-/// Extract clean content from HTML and convert to Markdown
-pub fn extract_clean_markdown(html: &str, url: &str) -> Result<ExtractedContent> {
-    // Create Readability instance (~30ms)
-    let reader = Readability::new()
-        .context("Failed to initialize Readability")?;
-    
-    // Extract main content (~10ms)
-    let article = reader
-        .parse_with_url(html, url)
-        .context("Failed to parse HTML with Readability")?;
-
-    // Configure html-to-markdown-rs options
-    let options = create_markdown_options();
-
-    // Convert cleaned HTML to Markdown
-    let markdown = convert(&article.content, Some(options))
-        .context("Failed to convert HTML to Markdown")?;
-
-    Ok(ExtractedContent {
-        title: article.title,
-        byline: article.byline,
-        excerpt: article.excerpt,
-        site_name: article.site_name,
-        markdown,
-        url: url.to_string(),
-    })
-}
-
-/// Create optimized Markdown conversion options
-fn create_markdown_options() -> ConversionOptions {
-    let mut options = ConversionOptions {
-        heading_style: HeadingStyle::Atx,
-        code_block_style: CodeBlockStyle::Backticks,
-        newline_style: NewlineStyle::Backslash,
-        list_indent_width: 2,
-        bullets: "-".to_string(),
-        strong_em_symbol: '*',
-        escape_asterisks: false,
-        escape_underscores: false,
-        ..Default::default()
-    };
-
-    options.preprocessing = PreprocessingOptions {
-        enabled: true,
-        preset: PreprocessingPreset::Aggressive,
-        remove_navigation: true,
-        remove_forms: true,
-        ..Default::default()
-    };
-
-    options.strip_tags = vec![
-        "script".to_string(),
-        "style".to_string(),
-        "noscript".to_string(),
-        "iframe".to_string(),
-        "nav".to_string(),
-        "aside".to_string(),
-        "footer".to_string(),
-        "header".to_string(),
-    ];
-
-    options
-}
-
-/// Structure containing extracted content
+/// Структура с извлечённым контентом
 #[derive(Debug, Clone)]
 pub struct ExtractedContent {
     pub title: String,
@@ -88,48 +14,75 @@ pub struct ExtractedContent {
     pub url: String,
 }
 
-impl ExtractedContent {
-    /// Format as Markdown with YAML frontmatter
-    pub fn to_formatted_markdown(&self) -> String {
-        let mut result = String::with_capacity(self.markdown.len() + 512);
+/// Извлечь чистый контент из HTML и сконвертировать в Markdown
+pub fn extract_clean_markdown(html: &str, url: &str) -> Result<ExtractedContent> {
+    // Правильная настройка конфигурации
+    let config = Config {
+        text_mode: TextMode::Markdown,
+        candidate_select_mode: CandidateSelectMode::Readability,
+        ..Default::default()
+    };
 
-        // YAML frontmatter for Neovim plugins
+    // Readability::new возвращает Result<Readability, ReadabilityError>
+    let mut readability = Readability::new(html, Some(url), Some(config))
+        .context("Failed to create Readability instance")?;
+
+    // Правильный метод: parse_with_policy (или просто parse() в новых версиях)
+    let article = readability
+        .parse_with_policy(ParsePolicy::Strict)
+        .context("Failed to parse HTML with dom_smoothie")?;
+
+    // Возвращаем структуру с извлечённым контентом
+    Ok(ExtractedContent {
+        title: article.title,
+        byline: article.byline,
+        excerpt: article.excerpt,
+        site_name: article.site_name,
+        markdown: article.text_content.to_string(), // Уже в Markdown формате
+        url: url.to_string(),
+    })
+}
+
+impl ExtractedContent {
+    /// Отформатировать в Markdown с YAML frontmatter
+    pub fn to_formatted_markdown(&self) -> String {
+        let mut result = String::new();
+
+        // YAML frontmatter
         result.push_str("---\n");
-        result.push_str(&format!(
-            "title: \"{}\"\n",
-            self.title.replace('"', "\\\"")
-        ));
+        result.push_str(&format!("title: \"{}\"\n", self.title.replace('"', "\\\"")));
         result.push_str(&format!("url: {}\n", self.url));
-        if let Some(byline) = &self.byline {
+
+        if let Some(ref byline) = self.byline {
             result.push_str(&format!("author: \"{}\"\n", byline.replace('"', "\\\"")));
         }
-        if let Some(site_name) = &self.site_name {
+
+        if let Some(ref site_name) = self.site_name {
             result.push_str(&format!("source: \"{}\"\n", site_name.replace('"', "\\\"")));
         }
         result.push_str("---\n\n");
 
-        // Title
+        // Заголовок
         result.push_str(&format!("# {}\n\n", self.title));
 
-        // Metadata block
-        if let Some(byline) = &self.byline {
+        // Метаданные
+        if let Some(ref byline) = self.byline {
             result.push_str(&format!("**Author**: {}\n", byline));
         }
-        if let Some(site_name) = &self.site_name {
+        if let Some(ref site_name) = self.site_name {
             result.push_str(&format!("**Source**: {}\n", site_name));
         }
-        result.push_str(&format!("**URL**: <{}>\n\n", self.url));
+        result.push_str(&format!("**URL**: [{}]({})\n\n", self.title, self.url));
 
-        // Excerpt as blockquote
-        if let Some(excerpt) = &self.excerpt {
+        // Excerpt
+        if let Some(ref excerpt) = self.excerpt {
             if !excerpt.is_empty() {
-                result.push_str(&format!("> {}\n\n", excerpt));
+                result.push_str(&format!("> {}\n\n", excerpt.trim()));
             }
         }
 
         result.push_str("---\n\n");
         result.push_str(&self.markdown);
-
         result
     }
 }
@@ -142,6 +95,7 @@ mod tests {
     fn test_extract_simple_article() {
         let html = r#"
             <html>
+            <head><title>Test Title</title></head>
             <body>
                 <article>
                     <h1>Test Title</h1>
@@ -153,9 +107,10 @@ mod tests {
 
         let result = extract_clean_markdown(html, "https://test.com");
         assert!(result.is_ok());
-
+        
         let content = result.unwrap();
         assert_eq!(content.title, "Test Title");
         assert!(content.markdown.contains("bold"));
+        assert!(!content.markdown.is_empty());
     }
 }

@@ -7,18 +7,25 @@ use ratatui::{
     widgets::{Block, Borders, Gauge, List, ListItem, Paragraph, Wrap},
     Frame,
 };
+use std::collections::HashMap;
 
 use crate::app::{App, AppState};
+use crate::prefetch::PrefetchStatus;
 
 /// Draw the main UI
-pub fn draw_ui(f: &mut Frame, app: &App, prefetch_progress: (usize, usize)) {
+pub fn draw_ui(
+    f: &mut Frame,
+    app: &App,
+    prefetch_progress: (usize, usize),
+    statuses: &HashMap<String, PrefetchStatus>,
+) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3), // Search input
             Constraint::Length(1), // Progress bar
             Constraint::Min(10),   // Results
-            Constraint::Length(3), // Help bar
+            Constraint::Length(4), // Help bar (increased for status legend)
         ])
         .split(f.area());
 
@@ -31,7 +38,7 @@ pub fn draw_ui(f: &mut Frame, app: &App, prefetch_progress: (usize, usize)) {
     // Draw main content
     match app.state {
         AppState::Input | AppState::Results => {
-            draw_results(f, app, chunks[2]);
+            draw_results(f, app, chunks[2], statuses);
         }
         AppState::Searching => {
             draw_searching(f, chunks[2]);
@@ -117,8 +124,13 @@ fn draw_progress_bar(f: &mut Frame, progress: (usize, usize), area: Rect) {
     f.render_widget(gauge, area);
 }
 
-/// Draw search results list
-fn draw_results(f: &mut Frame, app: &App, area: Rect) {
+/// Draw search results list with per-result status
+fn draw_results(
+    f: &mut Frame,
+    app: &App,
+    area: Rect,
+    statuses: &HashMap<String, PrefetchStatus>,
+) {
     if app.results.is_empty() {
         let message = if app.state == AppState::Input {
             "Enter your search query above and press Enter"
@@ -153,14 +165,30 @@ fn draw_results(f: &mut Frame, app: &App, area: Rect) {
             let is_selected = i == app.selected_index;
             let is_marked = app.selected_items.contains(&i);
 
-            // Status indicator
-            let status_char = if is_marked { "✓" } else { " " };
+            // Get status for this result
+            let status = statuses
+                .get(&result.url)
+                .cloned()
+                .unwrap_or(PrefetchStatus::Pending);
+
+            // Status icon and color
+            let (status_icon, status_color) = match status {
+                PrefetchStatus::Ready(_) => ("✓", Color::Green),
+                PrefetchStatus::Cached(_) => ("📄", Color::Blue),
+                PrefetchStatus::InProgress => ("⏳", Color::Yellow),
+                PrefetchStatus::Failed(_) => ("⚠", Color::Red),
+                PrefetchStatus::Timeout => ("⏱", Color::Red),
+                PrefetchStatus::Pending => ("○", Color::DarkGray),
+            };
+
+            // Selection indicator
+            let select_char = if is_marked { "✓" } else { " " };
             let number = format!("{:2}.", i + 1);
 
             let content = vec![
                 Line::from(vec![
                     Span::styled(
-                        status_char,
+                        select_char,
                         Style::default().fg(if is_marked {
                             Color::Green
                         } else {
@@ -168,6 +196,8 @@ fn draw_results(f: &mut Frame, app: &App, area: Rect) {
                         }),
                     ),
                     Span::styled(number, Style::default().fg(Color::Yellow)),
+                    Span::raw(" "),
+                    Span::styled(status_icon, Style::default().fg(status_color)),
                     Span::raw(" "),
                     Span::styled(
                         &result.title,
@@ -261,12 +291,12 @@ fn draw_error(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(paragraph, area);
 }
 
-/// Draw help bar
+/// Draw help bar with status legend
 fn draw_help_bar(f: &mut Frame, app: &App, area: Rect) {
     let help_text = match app.state {
         AppState::Input => "Enter: Search │ Esc: Clear │ Ctrl+Q: Quit",
         AppState::Results => {
-            "↑/k ↓/j: Navigate │ gg/G: First/Last │ Tab: Select │ Enter: Open │ Ctrl+B: Browser │ Esc: New Search │ Ctrl+Q: Quit"
+            "↑/k ↓/j: Navigate │ gg/G: First/Last │ Tab: Select │ Enter: Neovim │ Ctrl+B: Browser │ Esc: New Search │ Ctrl+Q: Quit\nStatus: ✓=Ready 📄=Cached ⏳=Loading ⚠=Failed ⏱=Timeout"
         }
         AppState::Searching => "⏳ Please wait... │ Ctrl+Q: Quit",
         AppState::Error => "Press any key to continue │ Ctrl+Q: Quit",

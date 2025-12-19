@@ -1,11 +1,7 @@
 //! Global shared resources for optimal performance
 //!
 //! This module provides singleton instances of expensive-to-create resources:
-//! - HTTP client with connection pooling and compression
-//!
-//! Note: Readability (readability-js) uses QuickJS internally which is NOT
-//! Send/Sync, so it cannot be stored in a global static. Each async task
-//! creates its own instance.
+//! - HTTP client with optimized connection pooling and compression
 
 use anyhow::Result;
 use reqwest::Client;
@@ -20,6 +16,7 @@ static HTTP_CLIENT: OnceLock<Client> = OnceLock::new();
 /// Features:
 /// - Connection pooling (reuses TCP connections)
 /// - Gzip/Brotli decompression (reduces bandwidth ~4x)
+/// - TCP and HTTP/2 keepalive
 /// - Reasonable timeouts
 /// - Proper User-Agent
 pub fn get_http_client() -> &'static Client {
@@ -29,9 +26,13 @@ pub fn get_http_client() -> &'static Client {
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(20))
             .read_timeout(Duration::from_secs(15))
-            // Connection pooling - KEY OPTIMIZATION
-            .pool_max_idle_per_host(10)
-            .pool_idle_timeout(Duration::from_secs(90))
+            // Connection pooling - OPTIMIZED
+            .pool_max_idle_per_host(15) // Up from 10
+            .pool_idle_timeout(Duration::from_secs(120)) // Up from 90
+            // TCP/HTTP keepalive - NEW
+            .tcp_keepalive(Some(Duration::from_secs(60)))
+            .http2_keep_alive_interval(Some(Duration::from_secs(30)))
+            .http2_keep_alive_timeout(Duration::from_secs(10))
             // Compression - reduces traffic ~4x
             .gzip(true)
             .brotli(true)

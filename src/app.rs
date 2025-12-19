@@ -1,11 +1,11 @@
 //! Application state and core logic
 
 use anyhow::{Context, Result};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::Command;
 
-use crate::prefetch::PrefetchManager;
+use crate::prefetch::{PrefetchManager, PrefetchStatus};
 use crate::search::SearchResult;
 
 /// Messages sent from background tasks to the main app
@@ -50,6 +50,16 @@ impl App {
         let base_dir = PathBuf::from("websearch");
         let prefetch_manager = PrefetchManager::new(base_dir)?;
 
+        // Spawn background cleanup task (removes files older than 5 days)
+        let pm_clone = prefetch_manager.clone();
+        tokio::spawn(async move {
+            if let Ok(count) = pm_clone.cleanup_old_files().await {
+                if count > 0 {
+                    eprintln!("🧹 Cleaned up {} old cache files", count);
+                }
+            }
+        });
+
         Ok(Self {
             state: AppState::Input,
             input: String::new(),
@@ -93,14 +103,14 @@ impl App {
         self.scroll_offset = 0;
         self.status_message = format!("Found {} results. Prefetching...", count);
 
-        // Start prefetching all results in background
+        // Start prefetching all results in background (with caching)
         self.prefetch_manager.prefetch_all(&self.results).await;
     }
 
     /// Update prefetch progress
     pub fn update_prefetch_progress(&mut self, completed: usize, total: usize) {
         if completed == total {
-            self.status_message = format!("All {} pages ready!", total);
+            self.status_message = format!("✓ All {} pages ready!", total);
         } else {
             self.status_message = format!("Prefetching: {}/{}", completed, total);
         }
@@ -222,6 +232,16 @@ impl App {
     /// Get prefetch progress
     pub async fn get_prefetch_progress(&self) -> (usize, usize) {
         self.prefetch_manager.get_progress().await
+    }
+
+    /// Get prefetch status for a specific URL
+    pub async fn get_prefetch_status(&self, url: &str) -> PrefetchStatus {
+        self.prefetch_manager.get_status(url).await
+    }
+
+    /// Get all prefetch statuses (for UI rendering)
+    pub async fn get_all_statuses(&self) -> HashMap<String, PrefetchStatus> {
+        self.prefetch_manager.get_all_statuses().await
     }
 }
 

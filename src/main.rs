@@ -2,9 +2,10 @@
 //!
 //! This TUI application provides:
 //! - Fast web search via Brave Search API
-//! - Background prefetching of all search results
-//! - Clean markdown extraction from web pages
+//! - Background prefetching with intelligent caching (12 concurrent, 8s timeout)
+//! - Clean markdown extraction from web pages (dom_smoothie)
 //! - Seamless Neovim integration for reading
+//! - Auto-cleanup of files older than 5 days
 
 mod app;
 mod extract_clean_md;
@@ -33,7 +34,7 @@ async fn main() -> Result<()> {
     // Load environment variables
     dotenv().ok();
 
-    // Initialize global resources (HTTP client, Readability)
+    // Initialize global resources (HTTP client)
     // This happens once at startup, avoiding delays during use
     globals::init_globals()?;
 
@@ -91,8 +92,9 @@ async fn run_app<B: ratatui::backend::Backend>(
             }
         }
 
-        // Get prefetch progress for UI
+        // Get prefetch progress and all statuses for UI
         let prefetch_progress = app.get_prefetch_progress().await;
+        let statuses = app.get_all_statuses().await;
 
         // Update progress in status
         if app.state == AppState::Results {
@@ -103,7 +105,7 @@ async fn run_app<B: ratatui::backend::Backend>(
         }
 
         // Draw UI
-        terminal.draw(|f| draw_ui(f, app, prefetch_progress))?;
+        terminal.draw(|f| draw_ui(f, app, prefetch_progress, &statuses))?;
 
         // Handle input with timeout
         if event::poll(Duration::from_millis(100))? {
@@ -202,6 +204,12 @@ async fn run_app<B: ratatui::backend::Backend>(
                             }
                             KeyCode::Enter => {
                                 last_g_press = None;
+
+                                // Check if multiple items selected - prevent multi-neovim
+                                if !app.selected_items.is_empty() {
+                                    app.status_message = "⚠ Can't open multiple files in Neovim. Unselect with Tab, or use Ctrl+B for browser".to_string();
+                                    continue;
+                                }
 
                                 // Try to open in neovim
                                 match app.prepare_neovim_open().await {
