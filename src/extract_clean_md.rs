@@ -3,7 +3,7 @@ use dom_smoothie::{
     CandidateSelectMode, Config, ParsePolicy, Readability, TextMode,
 };
 
-/// Структура с извлечённым контентом
+/// Struct for extracted content
 #[derive(Debug, Clone)]
 pub struct ExtractedContent {
     pub title: String,
@@ -14,37 +14,38 @@ pub struct ExtractedContent {
     pub url: String,
 }
 
-/// Извлечь чистый контент из HTML и сконвертировать в Markdown
+/// Extract clean content from html and convert to Markdown
 pub fn extract_clean_markdown(html: &str, url: &str) -> Result<ExtractedContent> {
-    // Правильная настройка конфигурации
+    // corrected config
     let config = Config {
         text_mode: TextMode::Markdown,
-        candidate_select_mode: CandidateSelectMode::Readability,
+        //candidate_select_mode: CandidateSelectMode::Readability,
+        candidate_select_mode: CandidateSelectMode::DomSmoothie,
         ..Default::default()
     };
 
-    // Readability::new возвращает Result<Readability, ReadabilityError>
+    // Readability::new returns Result<Readability, ReadabilityError>
     let mut readability = Readability::new(html, Some(url), Some(config))
         .context("Failed to create Readability instance")?;
 
-    // Правильный метод: parse_with_policy (или просто parse() в новых версиях)
     let article = readability
-        .parse_with_policy(ParsePolicy::Strict)
+        //.parse_with_policy(ParsePolicy::Strict)
+        .parse_with_policy(ParsePolicy::Raw)
         .context("Failed to parse HTML with dom_smoothie")?;
 
-    // Возвращаем структуру с извлечённым контентом
+    // Rutern struct with extracted content
     Ok(ExtractedContent {
         title: article.title,
         byline: article.byline,
         excerpt: article.excerpt,
         site_name: article.site_name,
-        markdown: article.text_content.to_string(), // Уже в Markdown формате
+        markdown: article.text_content.to_string(),
         url: url.to_string(),
     })
 }
 
 impl ExtractedContent {
-    /// Отформатировать в Markdown с YAML frontmatter
+    /// Format Markdown with YAML frontmatter
     pub fn to_formatted_markdown(&self) -> String {
         let mut result = String::new();
 
@@ -62,10 +63,10 @@ impl ExtractedContent {
         }
         result.push_str("---\n\n");
 
-        // Заголовок
+        // Header
         result.push_str(&format!("# {}\n\n", self.title));
 
-        // Метаданные
+        // Meta data
         if let Some(ref byline) = self.byline {
             result.push_str(&format!("**Author**: {}\n", byline));
         }

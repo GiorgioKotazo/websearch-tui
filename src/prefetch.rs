@@ -270,6 +270,12 @@ impl PrefetchManager {
                     let _ = std::fs::remove_file(&source_path);
                 }
 
+                // Renew status to Cached with new path
+                {
+                    let mut statuses = self.status.write().await;
+                    statuses.insert(url.to_string(), PrefetchStatus::Cached(dest_path.clone()));
+                }
+
                 Ok(dest_path)
             }
             PrefetchStatus::InProgress => {

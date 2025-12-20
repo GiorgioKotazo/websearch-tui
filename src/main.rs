@@ -121,10 +121,25 @@ async fn run_app<B: ratatui::backend::Backend>(
                                 return Ok(());
                             }
                             KeyCode::Char(c) => {
-                                app.input.push(c);
+                                app.insert_char(c);
                             }
                             KeyCode::Backspace => {
-                                app.input.pop();
+                                app.delete_char_before();
+                            }
+                            KeyCode::Delete => {
+                                app.delete_char_after();
+                            }
+                            KeyCode::Left => {
+                                app.cursor_left();
+                            }
+                            KeyCode::Right => {
+                                app.cursor_right();
+                            }
+                            KeyCode::Home => {
+                                app.cursor_home();
+                            }
+                            KeyCode::End => {
+                                app.cursor_end();
                             }
                             KeyCode::Enter => {
                                 if !app.input.trim().is_empty() {
@@ -158,7 +173,7 @@ async fn run_app<B: ratatui::backend::Backend>(
                                 }
                             }
                             KeyCode::Esc => {
-                                app.input.clear();
+                                app.clear_input();
                             }
                             _ => {}
                         }

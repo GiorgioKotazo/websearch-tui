@@ -83,7 +83,13 @@ fn draw_search_input(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(input, area);
 
     if is_focused {
-        f.set_cursor_position((area.x + app.input.len() as u16 + 1, area.y + 1));
+        //f.set_cursor_position((area.x + app.input.len() as u16 + 1, area.y + 1));
+        //f.set_cursor_position((area.x + app.input.chars().count() as u16 + 1, area.y + 1));
+        // MODIFIED: Using cursor_pos вместо len()
+        f.set_cursor_position((
+            area.x + app.cursor_pos as u16 + 1,
+            area.y + 1
+        ));
     }
 }
 
@@ -221,7 +227,11 @@ fn draw_results(
             ];
 
             let style = if is_selected {
-                Style::default().bg(Color::DarkGray)
+                //Style::default().bg(Color::DarkGray)
+                //Style::default().bg(Color::Rgb(40, 40, 40))
+                Style::default()
+                    .bg(Color::Rgb(35, 35, 45))  // Dark blue
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };

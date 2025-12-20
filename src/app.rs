@@ -34,6 +34,7 @@ pub enum AppState {
 pub struct App {
     pub state: AppState,
     pub input: String,
+    pub cursor_pos: usize, // NEW: cursor position in chars not in bytes
     pub results: Vec<SearchResult>,
     pub selected_index: usize,
     pub scroll_offset: usize,
@@ -45,6 +46,73 @@ pub struct App {
 }
 
 impl App {
+    /// Insert char to the cursor position
+    pub fn insert_char(&mut self, c: char) {
+        let byte_pos = self.char_to_byte_pos(self.cursor_pos);
+        self.input.insert(byte_pos, c);
+        self.cursor_pos += 1;
+    }
+
+    /// Delete char before cursor (Backspace)
+    pub fn delete_char_before(&mut self) {
+        if self.cursor_pos > 0 {
+            self.cursor_pos -= 1;
+            let byte_pos = self.char_to_byte_pos(self.cursor_pos);
+            let next_byte_pos = self.char_to_byte_pos(self.cursor_pos + 1);
+            self.input.drain(byte_pos..next_byte_pos);
+        }
+    }
+
+    /// Delete char after cursor (Delete)
+    pub fn delete_char_after(&mut self) {
+        let char_count = self.input.chars().count();
+        if self.cursor_pos < char_count {
+            let byte_pos = self.char_to_byte_pos(self.cursor_pos);
+            let next_byte_pos = self.char_to_byte_pos(self.cursor_pos + 1);
+            self.input.drain(byte_pos..next_byte_pos);
+        }
+    }
+
+    /// Move cursor left
+    pub fn cursor_left(&mut self) {
+        if self.cursor_pos > 0 {
+            self.cursor_pos -= 1;
+        }
+    }
+
+    /// Move cursor right
+    pub fn cursor_right(&mut self) {
+        let char_count = self.input.chars().count();
+        if self.cursor_pos < char_count {
+            self.cursor_pos += 1;
+        }
+    }
+
+    /// Move cursor to start of line (Home)
+    pub fn cursor_home(&mut self) {
+        self.cursor_pos = 0;
+    }
+
+    /// Move cursor to end of line (End)
+    pub fn cursor_end(&mut self) {
+        self.cursor_pos = self.input.chars().count();
+    }
+
+    /// Clear input
+    pub fn clear_input(&mut self) {
+        self.input.clear();
+        self.cursor_pos = 0;
+    }
+
+    /// Convert cursor position to byte position
+    fn char_to_byte_pos(&self, char_pos: usize) -> usize {
+        self.input
+            .char_indices()
+            .nth(char_pos)
+            .map(|(byte_pos, _)| byte_pos)
+            .unwrap_or(self.input.len())
+    }
+
     /// Create new app instance
     pub fn new() -> Result<Self> {
         let base_dir = PathBuf::from("websearch");
@@ -63,6 +131,7 @@ impl App {
         Ok(Self {
             state: AppState::Input,
             input: String::new(),
+            cursor_pos: 0, // NEW
             results: Vec::new(),
             selected_index: 0,
             scroll_offset: 0,

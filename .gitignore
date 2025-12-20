@@ -1,5 +1,5 @@
 /target
 /websearch
-/archive_00
-/src/archive_00
+/archive_*
+/src/archive_*
 .env
