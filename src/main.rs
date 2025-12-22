@@ -1,13 +1,14 @@
 //! websearch-tui - Lightning-fast terminal web search with Neovim integration
 //!
 //! This TUI application provides:
-//! - Fast web search via Brave Search API
+//! - Fast web search via Brave Search API or DuckDuckGo
 //! - Background prefetching with intelligent caching (12 concurrent, 8s timeout)
 //! - Clean markdown extraction from web pages (dom_smoothie)
 //! - Seamless Neovim integration for reading
 //! - Auto-cleanup of files older than 5 days
 
 mod app;
+mod duckduckgo_search;
 mod extract_clean_md;
 mod globals;
 mod prefetch;
@@ -120,6 +121,29 @@ async fn run_app<B: ratatui::backend::Backend>(
                             KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                                 return Ok(());
                             }
+                            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                // Ctrl+D: DuckDuckGo search
+                                if !app.input.trim().is_empty() {
+                                    let query = app.input.clone();
+                                    app.start_search().await;
+
+                                    // Spawn DuckDuckGo search task
+                                    let tx_clone = tx.clone();
+                                    tokio::spawn(async move {
+                                        match duckduckgo_search::duckduckgo_search(&query).await {
+                                            Ok(results) => {
+                                                let _ = tx_clone
+                                                    .send(AppMessage::SearchComplete(results));
+                                            }
+                                            Err(e) => {
+                                                let _ = tx_clone.send(AppMessage::SearchError(
+                                                    e.to_string(),
+                                                ));
+                                            }
+                                        }
+                                    });
+                                }
+                            }
                             KeyCode::Char(c) => {
                                 app.insert_char(c);
                             }
@@ -149,6 +173,7 @@ async fn run_app<B: ratatui::backend::Backend>(
                                     // Spawn search task
                                     let tx_clone = tx.clone();
                                     tokio::spawn(async move {
+                                        // Use Brave search (Enter)
                                         let api_key = std::env::var("BRAVE_SEARCH_API_KEY")
                                             .unwrap_or_default();
 

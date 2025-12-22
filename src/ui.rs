@@ -83,9 +83,6 @@ fn draw_search_input(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(input, area);
 
     if is_focused {
-        //f.set_cursor_position((area.x + app.input.len() as u16 + 1, area.y + 1));
-        //f.set_cursor_position((area.x + app.input.chars().count() as u16 + 1, area.y + 1));
-        // MODIFIED: Using cursor_pos вместо len()
         f.set_cursor_position((
             area.x + app.cursor_pos as u16 + 1,
             area.y + 1
@@ -227,8 +224,6 @@ fn draw_results(
             ];
 
             let style = if is_selected {
-                //Style::default().bg(Color::DarkGray)
-                //Style::default().bg(Color::Rgb(40, 40, 40))
                 Style::default()
                     .bg(Color::Rgb(35, 35, 45))  // Dark blue
                     .add_modifier(Modifier::BOLD)
@@ -304,7 +299,7 @@ fn draw_error(f: &mut Frame, app: &App, area: Rect) {
 /// Draw help bar with status legend
 fn draw_help_bar(f: &mut Frame, app: &App, area: Rect) {
     let help_text = match app.state {
-        AppState::Input => "Enter: Search │ Esc: Clear │ Ctrl+Q: Quit",
+        AppState::Input => "Enter: Brave Search │ Ctrl+D: DuckDuckGo │ Esc: Clear │ Ctrl+Q: Quit",
         AppState::Results => {
             "↑/k ↓/j: Navigate │ gg/G: First/Last │ Tab: Select │ Enter: Neovim │ Ctrl+B: Browser │ Esc: New Search │ Ctrl+Q: Quit\nStatus: ✓=Ready 📄=Cached ⏳=Loading ⚠=Failed ⏱=Timeout"
         }
