@@ -299,7 +299,7 @@ fn draw_error(f: &mut Frame, app: &App, area: Rect) {
 /// Draw help bar with status legend
 fn draw_help_bar(f: &mut Frame, app: &App, area: Rect) {
     let help_text = match app.state {
-        AppState::Input => "Enter: Brave Search │ Ctrl+D: DuckDuckGo │ Esc: Clear │ Ctrl+Q: Quit",
+        AppState::Input => "Enter: Brave │ Ctrl+D: DuckDuckGo │ Ctrl+X: SearXNG │ Ctrl+Z: Startpage │ Esc: Clear │ Ctrl+Q: Quit",
         AppState::Results => {
             "↑/k ↓/j: Navigate │ gg/G: First/Last │ Tab: Select │ Enter: Neovim │ Ctrl+B: Browser │ Esc: New Search │ Ctrl+Q: Quit\nStatus: ✓=Ready 📄=Cached ⏳=Loading ⚠=Failed ⏱=Timeout"
         }

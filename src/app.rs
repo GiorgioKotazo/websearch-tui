@@ -303,11 +303,6 @@ impl App {
         self.prefetch_manager.get_progress().await
     }
 
-    /// Get prefetch status for a specific URL
-    pub async fn get_prefetch_status(&self, url: &str) -> PrefetchStatus {
-        self.prefetch_manager.get_status(url).await
-    }
-
     /// Get all prefetch statuses (for UI rendering)
     pub async fn get_all_statuses(&self) -> HashMap<String, PrefetchStatus> {
         self.prefetch_manager.get_all_statuses().await

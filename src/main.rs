@@ -1,7 +1,7 @@
 //! websearch-tui - Lightning-fast terminal web search with Neovim integration
 //!
 //! This TUI application provides:
-//! - Fast web search via Brave Search API or DuckDuckGo
+//! - Fast web search via Brave Search API, DuckDuckGo, or SearXNG
 //! - Background prefetching with intelligent caching (12 concurrent, 8s timeout)
 //! - Clean markdown extraction from web pages (dom_smoothie)
 //! - Seamless Neovim integration for reading
@@ -13,6 +13,8 @@ mod extract_clean_md;
 mod globals;
 mod prefetch;
 mod search;
+mod searxng_search;
+mod startpage_search;
 mod ui;
 
 use anyhow::Result;
@@ -131,6 +133,52 @@ async fn run_app<B: ratatui::backend::Backend>(
                                     let tx_clone = tx.clone();
                                     tokio::spawn(async move {
                                         match duckduckgo_search::duckduckgo_search(&query).await {
+                                            Ok(results) => {
+                                                let _ = tx_clone
+                                                    .send(AppMessage::SearchComplete(results));
+                                            }
+                                            Err(e) => {
+                                                let _ = tx_clone.send(AppMessage::SearchError(
+                                                    e.to_string(),
+                                                ));
+                                            }
+                                        }
+                                    });
+                                }
+                            }
+                            KeyCode::Char('x') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                // Ctrl+X: SearXNG search
+                                if !app.input.trim().is_empty() {
+                                    let query = app.input.clone();
+                                    app.start_search().await;
+
+                                    // Spawn SearXNG search task
+                                    let tx_clone = tx.clone();
+                                    tokio::spawn(async move {
+                                        match searxng_search::searxng_search(&query).await {
+                                            Ok(results) => {
+                                                let _ = tx_clone
+                                                    .send(AppMessage::SearchComplete(results));
+                                            }
+                                            Err(e) => {
+                                                let _ = tx_clone.send(AppMessage::SearchError(
+                                                    e.to_string(),
+                                                ));
+                                            }
+                                        }
+                                    });
+                                }
+                            }
+                            KeyCode::Char('z') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                // Ctrl+Z: Startpage search (Google results with privacy)
+                                if !app.input.trim().is_empty() {
+                                    let query = app.input.clone();
+                                    app.start_search().await;
+
+                                    // Spawn Startpage search task
+                                    let tx_clone = tx.clone();
+                                    tokio::spawn(async move {
+                                        match startpage_search::startpage_search(&query).await {
                                             Ok(results) => {
                                                 let _ = tx_clone
                                                     .send(AppMessage::SearchComplete(results));
